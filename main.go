@@ -1,76 +1,64 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"flag"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"strconv"
+	"sync"
+	"time"
 
+	k8sExec "github.com/smritidahal653/benchmark/exec"
+	k8sDiscovery "github.com/smritidahal653/benchmark/k8s"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/tools/remotecommand"
-	"k8s.io/client-go/util/homedir"
 )
 
 func main() {
-	var kubeconfig *string
-	if home := homedir.HomeDir(); home != "" {
-		kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
-	} else {
-		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
-	}
-	flag.Parse()
-
-	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
+	// provides the clientset and config
+	clientset, config, err := k8sDiscovery.K8s()
 	if err != nil {
-		log.Fatal("could not get config")
+		log.Fatal(err)
 	}
 
-	// creates the in-cluster config
-	// config, err = rest.InClusterConfig()
-	// if err != nil {
-	// 	panic(err.Error())
-	// }
-	// creates the clientset
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		panic(err.Error())
-	}
+	os.Setenv("NUM_PODS_TO_CREATE", "10")
 
-	os.Setenv("CONCURRENT_PODS", "10")
-	createdPods, err := createPods(clientset)
-	if err != nil {
-		panic(err.Error())
-	}
+	var wg sync.WaitGroup
 
-	err = executeCommandInPod(clientset, config, createdPods)
-	if err != nil {
-		log.Fatal("Ecountered error while executing command in Pod", "Error:", err)
-	} else {
-		log.Print("Successfully executed commands for all pods")
-	}
+	wg.Add(1)
+	go func() {
+		createPods(clientset)
+		wg.Done()
+	}()
+
+	wg.Add(1)
+	go func() {
+		executeCommandInPod(clientset, config)
+		wg.Done()
+	}()
+
+	wg.Wait()
 }
 
-func createPods(clientset *kubernetes.Clientset) ([]*corev1.Pod, error) {
-	numPods, err := strconv.Atoi(os.Getenv("CONCURRENT_PODS"))
+// creates number of pods specified by env var NUM_PODS_TO_CREATE
+func createPods(clientset *kubernetes.Clientset) {
+	numPods, err := strconv.Atoi(os.Getenv("NUM_PODS_TO_CREATE"))
 
 	if err != nil {
-		return nil, err
+		log.Fatal(err)
 	}
 
-	createdPods := make([]*corev1.Pod, 0)
 	for i := 0; i < numPods; i++ {
 		// Define the pod object
 		pod := &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: "example-pod" + fmt.Sprint(i),
+				GenerateName: "pod-",
+				Labels:       map[string]string{"for": "exec"},
 			},
 			Spec: corev1.PodSpec{
 				Containers: []corev1.Container{
@@ -79,51 +67,73 @@ func createPods(clientset *kubernetes.Clientset) ([]*corev1.Pod, error) {
 						Image: "nginx:latest",
 					},
 				},
+				ServiceAccountName: "pod-executor",
 			},
 		}
 
 		// Create the pod
 		createdPod, err := clientset.CoreV1().Pods("default").Create(context.TODO(), pod, metav1.CreateOptions{})
 		if err != nil {
-			return nil, err
+			log.Fatal(err)
 		}
-
-		createdPods = append(createdPods, createdPod)
+		log.Printf("created %s successfully", createdPod.Name)
+		time.Sleep(time.Millisecond * 500)
 	}
-
-	return createdPods, nil
 }
 
-func executeCommandInPod(clientset *kubernetes.Clientset, config *rest.Config, createdPods []*corev1.Pod) error {
-	for i := range createdPods {
-		// Execute the command inside the pod
-		execReq := clientset.CoreV1().RESTClient().Post().Resource("pods").Name(createdPods[i].Name).Namespace(createdPods[i].Namespace).SubResource("exec")
-		execReq.VersionedParams(&corev1.PodExecOptions{
-			Container: "nginx:latest",
-			Command:   []string{"ls"},
-			Stdin:     true,
-			Stdout:    true,
-		}, metav1.ParameterCodec)
+// Execs into a random running pod and runs ls command
+func executeCommandInPod(clientset *kubernetes.Clientset, config *rest.Config) {
+	for {
+		//at least one pod needs to be created first
+		if createdPods := getPodList(clientset, "default"); len(createdPods) > 0 {
+			podToExecute := randPod(createdPods)
 
-		// Create a new executor
-		executor, err := remotecommand.NewSPDYExecutor(config, "POST", execReq.URL())
-		if err != nil {
-			return err
+			//can only exec if the pod is ready
+			if podToExecute.Status.Phase == corev1.PodRunning {
+				// Execute the command inside the pod
+				k8s := k8sExec.K8sExec{
+					ClientSet:     clientset,
+					RestConfig:    config,
+					PodName:       podToExecute.Name,
+					ContainerName: podToExecute.Spec.Containers[0].Name,
+					Namespace:     podToExecute.Namespace,
+				}
+
+				cmds := []string{"ls"}
+
+				_, stderr, err := k8s.Exec(cmds)
+
+				if err != nil {
+					log.Fatal("Ecountered error while executing command in Pod ", podToExecute.Name, " Error: ", err, string(stderr))
+				} else {
+					log.Print("Successfully executed commands for ", podToExecute.Name)
+				}
+			}
 		}
-
-		// Create a new streamer for the command output
-		output := &bytes.Buffer{}
-
-		// Execute the command and capture the output
-		err = executor.StreamWithContext(context.TODO(), remotecommand.StreamOptions{
-			Stdin:  os.Stdin,
-			Stdout: output,
-			Stderr: os.Stderr,
-			Tty:    false,
-		})
-		if err != nil {
-			return err
-		}
+		time.Sleep(time.Millisecond * 500)
 	}
-	return nil
+}
+
+// Retrieves all pods in the default namespace
+func getPodList(clientset *kubernetes.Clientset, namespace string) []corev1.Pod {
+	podList := &corev1.PodList{}
+
+	req := clientset.CoreV1().RESTClient().Get().Resource("pods").Namespace(namespace)
+	data, err := req.DoRaw(context.TODO())
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if err := json.Unmarshal(data, &podList); err != nil {
+		log.Fatal(err)
+	}
+
+	return podList.Items
+}
+
+func randPod(items []corev1.Pod) *corev1.Pod {
+	index := rand.Intn(len(items))
+
+	randPod := items[index]
+	return &randPod
 }
