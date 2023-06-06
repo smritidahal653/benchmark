@@ -12,16 +12,14 @@ import (
 )
 
 func K8s() (*kubernetes.Clientset, *rest.Config, error) {
-	if _, inCluster := os.LookupEnv("KUBERNETES_SERVICE_HOST"); inCluster == true {
+	if _, inCluster := os.LookupEnv("KUBERNETES_SERVICE_HOST"); inCluster {
 		log.Printf("inside cluster, using in-cluster configuration")
 		config, err := rest.InClusterConfig()
 		if err != nil {
-			log.Fatalf("Failed to get incluster config:%v", err)
 			return nil, nil, err
 		}
 		clientSet, err := kubernetes.NewForConfig(config)
 		if err != nil {
-			log.Fatalf("Failed to construct the clientSet:%v", err)
 			return nil, nil, err
 		}
 		return clientSet, config, nil
@@ -37,12 +35,10 @@ func K8s() (*kubernetes.Clientset, *rest.Config, error) {
 	flag.Parse()
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
 	if err != nil {
-		log.Fatalf("Failed to build the config:%v", err)
 		return nil, nil, err
 	}
 	clientSet, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		log.Fatalf("Failed to construct the clientSet:%v", err)
 		return nil, nil, err
 	}
 	return clientSet, config, nil
