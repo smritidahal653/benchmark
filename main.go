@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -42,41 +41,48 @@ func main() {
 		wg.Done()
 	}()
 
+	// wg.Add(1)
+	// go func() {
+	// 	deletePod(clientset)
+	// 	wg.Done()
+	// }()
+
 	wg.Wait()
 }
 
 // creates number of pods specified by env var NUM_PODS_TO_CREATE
 func createPods(clientset *kubernetes.Clientset) {
 	numPods, err := strconv.Atoi(os.Getenv("NUM_PODS_TO_CREATE"))
-
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	for i := 0; i < numPods; i++ {
-		// Define the pod object
-		pod := &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				GenerateName: "pod-",
-				Labels:       map[string]string{"for": "exec"},
-			},
-			Spec: corev1.PodSpec{
-				Containers: []corev1.Container{
-					{
-						Name:  "example-container" + fmt.Sprint(i),
-						Image: "nginx:latest",
-					},
+	for {
+		if createdPods := getPodList(clientset, "default"); len(createdPods) < numPods {
+			// Define the pod object
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: "pod-",
+					Labels:       map[string]string{"for": "exec"},
 				},
-				ServiceAccountName: "pod-executor",
-			},
-		}
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "example-container",
+							Image: "nginx:latest",
+						},
+					},
+					ServiceAccountName: "pod-executor",
+				},
+			}
 
-		// Create the pod
-		createdPod, err := clientset.CoreV1().Pods("default").Create(context.TODO(), pod, metav1.CreateOptions{})
-		if err != nil {
-			log.Fatal(err)
+			// Create the pod
+			createdPod, err := clientset.CoreV1().Pods("default").Create(context.TODO(), pod, metav1.CreateOptions{})
+			if err != nil {
+				log.Fatal(err)
+			}
+			log.Printf("created %s successfully", createdPod.Name)
 		}
-		log.Printf("created %s successfully", createdPod.Name)
 		time.Sleep(time.Millisecond * 500)
 	}
 }
@@ -109,6 +115,23 @@ func executeCommandInPod(clientset *kubernetes.Clientset, config *rest.Config) {
 					log.Print("Successfully executed commands for ", podToExecute.Name)
 				}
 			}
+		}
+		time.Sleep(time.Millisecond * 500)
+	}
+}
+
+// Deletes a random pod
+func deletePod(clientset *kubernetes.Clientset) {
+	for {
+		//at least one pod needs to be created first
+		if createdPods := getPodList(clientset, "default"); len(createdPods) > 0 {
+			podToDelete := randPod(createdPods)
+			//delete the pod
+			err := clientset.CoreV1().Pods("default").Delete(context.TODO(), podToDelete.Name, metav1.DeleteOptions{})
+			if err != nil {
+				log.Fatal(err)
+			}
+			log.Printf("deleted %s successfully", podToDelete.Name)
 		}
 		time.Sleep(time.Millisecond * 500)
 	}
