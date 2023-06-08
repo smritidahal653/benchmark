@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"sync"
 	"syscall"
 	"time"
 
@@ -26,7 +25,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	os.Setenv("NUM_PODS_TO_CREATE", "10")
+	os.Setenv("NUM_PODS_TO_CREATE", "30")
 
 	numPods, err := strconv.Atoi(os.Getenv("NUM_PODS_TO_CREATE"))
 	if err != nil {
@@ -50,113 +49,93 @@ func main() {
 		close(stopCh)
 	}()
 
-	// Run the createPods goroutine
-	go createPods(clientset, numPods, stopCh)
-
-	// Wait for a short duration to allow pods to be created
-	time.Sleep(5 * time.Second)
-
-	// Run the executeCommands goroutine
-	go executeCommandInPod(clientset, config, numPods, stopCh)
+	for i := 0; i < numPods; i++ {
+		podName := fmt.Sprintf("pod-%d", i)
+		pod := createPodObject(podName)
+		go runWorkload(clientset, config, pod, stopCh)
+	}
 
 	// Wait indefinitely
 	select {}
 }
 
-// creates number of pods specified by env var NUM_PODS_TO_CREATE
-func createPods(clientset *kubernetes.Clientset, numPods int, stopCh <-chan struct{}) {
-	var wg sync.WaitGroup
-	for i := 1; i <= numPods; i++ {
-		wg.Add(1)
-
-		go func(podIndex int) {
-			defer wg.Done()
-
-			// Define the pod object
-			podName := fmt.Sprintf("pod-%d", podIndex)
-			pod := &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   podName,
-					Labels: map[string]string{"for": "exec"},
+// returns a pod object with the required service account with the given pod name
+func createPodObject(podName string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   podName,
+			Labels: map[string]string{"for": "exec"},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "test-container",
+					Image: "nginx:stable",
 				},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:  "my-container",
-							Image: "nginx:stable",
-						},
-					},
-					ServiceAccountName: "pod-executor",
-				},
-			}
-
-			// Create the pod
-			createdPod, err := clientset.CoreV1().Pods("default").Create(context.TODO(), pod, metav1.CreateOptions{})
-			if err != nil {
-				log.Fatal(err)
-			}
-			log.Printf("created %s successfully", createdPod.Name)
-		}(i)
-
-		//Wait for a short duration before creating the next pod
-		time.Sleep(1 * time.Second)
+			},
+			ServiceAccountName: "pod-executor",
+		},
 	}
-
-	wg.Wait()
 }
 
-// Execs into a random running pod and runs ls command
-func executeCommandInPod(clientset *kubernetes.Clientset, config *rest.Config, numPods int, stopCh <-chan struct{}) {
-	var wg sync.WaitGroup
+// creates a pod, execs into the pod then deletes the pod
+func runWorkload(clientset *kubernetes.Clientset, config *rest.Config, pod *corev1.Pod, stopCh <-chan struct{}) {
+	//create pod
+	createdPod, err := clientset.CoreV1().Pods("default").Create(context.TODO(), pod, metav1.CreateOptions{})
+	if err != nil {
+		log.Printf("Failed to create pod %s: %v", pod.Name, err)
+		return
+	}
+	log.Printf("created %s successfully", createdPod.Name)
 
-	for i := 1; i <= numPods; i++ {
-		wg.Add(1)
+	// Wait for the pod to be running
+	err = waitForPodRunning(clientset, createdPod.Name)
+	if err != nil {
+		log.Printf("Pod %s did not start running: %v", createdPod.Name, err)
+		return
+	}
 
-		go func(podIndex int) {
-			defer wg.Done()
+	// Execute the command inside the pod
+	k8s := k8sExec.K8sExec{
+		ClientSet:     clientset,
+		RestConfig:    config,
+		PodName:       createdPod.Name,
+		ContainerName: "test-container",
+		Namespace:     createdPod.Namespace,
+	}
 
-			podName := fmt.Sprintf("pod-%d", podIndex)
-			podToExecute := &corev1.Pod{}
-			// Wait until the pod is in the running state
-			//err := wait.PollImmediate(1*time.Second, 10*time.Second, func() (bool, error) {
-			podToExecute, err := clientset.CoreV1().Pods("default").Get(context.TODO(), podName, metav1.GetOptions{})
-			if err != nil {
-				log.Fatal(err)
-			}
+	cmds := []string{"ls"}
 
-			//can only exec if the pod is ready
-			if podToExecute.Status.Phase == corev1.PodRunning {
-				// Execute the command inside the pod
-				k8s := k8sExec.K8sExec{
-					ClientSet:     clientset,
-					RestConfig:    config,
-					PodName:       podToExecute.Name,
-					ContainerName: "my-container",
-					Namespace:     podToExecute.Namespace,
-				}
+	_, stderr, err := k8s.Exec(cmds)
 
-				cmds := []string{"ls"}
+	if err != nil {
+		log.Fatal("Ecountered error while executing command in Pod ", createdPod.Name, " Error: ", err, string(stderr))
+	} else {
+		log.Print("Successfully executed commands for ", createdPod.Name)
+	}
 
-				_, stderr, err := k8s.Exec(cmds)
+	//Wait for a short duration before deleting the pod
+	time.Sleep(1 * time.Second)
+	//delete the pod
+	err = clientset.CoreV1().Pods("default").Delete(context.TODO(), createdPod.Name, metav1.DeleteOptions{})
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("deleted %s successfully", createdPod.Name)
+}
 
-				if err != nil {
-					log.Fatal("Ecountered error while executing command in Pod ", podToExecute.Name, " Error: ", err, string(stderr))
-				} else {
-					log.Print("Successfully executed commands for ", podToExecute.Name)
-				}
+// checks pod status to ensure it is running
+func waitForPodRunning(clientset *kubernetes.Clientset, podName string) error {
+	for {
+		pod, err := clientset.CoreV1().Pods("default").Get(context.TODO(), podName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
 
-				//Wait for a short duration before deleting the pod
-				time.Sleep(1 * time.Second)
-				//delete the pod
-				err = clientset.CoreV1().Pods("default").Delete(context.TODO(), podName, metav1.DeleteOptions{})
-				if err != nil {
-					log.Fatal(err)
-				}
-				log.Printf("deleted %s successfully", podName)
-			}
+		if pod.Status.Phase == corev1.PodRunning {
+			return nil
+		}
 
-		}(i)
-
-		wg.Wait()
+		time.Sleep(time.Second)
 	}
 }
