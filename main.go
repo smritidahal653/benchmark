@@ -18,6 +18,11 @@ import (
 	"k8s.io/client-go/rest"
 )
 
+type ExecutionResult struct {
+	PodName      string
+	ErrorMessage string
+}
+
 func main() {
 	// provides the clientset and config
 	clientset, config, err := k8sDiscovery.K8s()
@@ -25,11 +30,11 @@ func main() {
 		log.Fatal(err)
 	}
 
-	os.Setenv("NUM_PODS_TO_CREATE", "30")
+	os.Setenv("NUM_PODS_TO_CREATE", "200")
 
 	numPods, err := strconv.Atoi(os.Getenv("NUM_PODS_TO_CREATE"))
 	if err != nil {
-		log.Fatal(err)
+		log.Print("Could not convert to int. Error: ", err)
 	}
 
 	// Create a stop channel to gracefully terminate the program
@@ -43,20 +48,68 @@ func main() {
 	go func() {
 		// Wait for termination signal
 		<-signals
-		fmt.Println("Termination signal received. Stopping...")
 
 		// Send stop signal to the goroutines
 		close(stopCh)
 	}()
 
+	//Timeout after 2 minutes
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	//channels to keep track of pod creation, command execution, and deletion
+	createResultCh := make(chan bool)
+	execResultCh := make(chan ExecutionResult)
+	deleteResultCh := make(chan bool)
+
+	//run the workload
 	for i := 0; i < numPods; i++ {
 		podName := fmt.Sprintf("pod-%d", i)
 		pod := createPodObject(podName)
-		go runWorkload(clientset, config, pod, stopCh)
+		go runWorkload(clientset, config, pod, createResultCh, execResultCh, deleteResultCh, stopCh)
+
 	}
 
-	// Wait indefinitely
-	select {}
+	// Counters for tracking results
+	var podsCreated, commandsExecuted, successfulExecutions, unsuccessfulExecutions, podsDeleted int
+
+	for {
+		select {
+		case podCreationResult := <-createResultCh:
+			if podCreationResult {
+				podsCreated++
+			}
+		case executionResult := <-execResultCh:
+			commandsExecuted++
+			if executionResult.ErrorMessage != "" {
+				unsuccessfulExecutions++
+			} else {
+				successfulExecutions++
+			}
+		case podDeletionResult := <-deleteResultCh:
+			if podDeletionResult {
+				podsDeleted++
+			}
+		case <-ctx.Done():
+			fmt.Println("Finished creating, executing, and deleting pods.")
+			fmt.Println("----------------------------------------------------")
+			fmt.Printf("Pods created: %d\n", podsCreated)
+			fmt.Printf("Commands executed: %d\n", commandsExecuted)
+			fmt.Printf("Pods deleted: %d\n", podsDeleted)
+			fmt.Println("----------------------------------------------------")
+			fmt.Printf("Execution success rate: %d %%\n", ((successfulExecutions / commandsExecuted) * 100))
+			return
+		case <-stopCh:
+			fmt.Println("Stopping pod creation, execution, and deletion...")
+			fmt.Println("----------------------------------------------------")
+			fmt.Printf("Pods created: %d\n", podsCreated)
+			fmt.Printf("Commands executed: %d\n", commandsExecuted)
+			fmt.Printf("Pods deleted: %d\n", podsDeleted)
+			fmt.Println("----------------------------------------------------")
+			fmt.Printf("Execution success rate: %d %%\n", ((successfulExecutions / commandsExecuted) * 100))
+			return
+		}
+	}
 }
 
 // returns a pod object with the required service account with the given pod name
@@ -79,20 +132,19 @@ func createPodObject(podName string) *corev1.Pod {
 }
 
 // creates a pod, execs into the pod then deletes the pod
-func runWorkload(clientset *kubernetes.Clientset, config *rest.Config, pod *corev1.Pod, stopCh <-chan struct{}) {
+func runWorkload(clientset *kubernetes.Clientset, config *rest.Config, pod *corev1.Pod, createResultCh chan<- bool, execResultCh chan<- ExecutionResult, deleteResultCh chan<- bool, stopCh <-chan struct{}) {
 	//create pod
 	createdPod, err := clientset.CoreV1().Pods("default").Create(context.TODO(), pod, metav1.CreateOptions{})
 	if err != nil {
 		log.Printf("Failed to create pod %s: %v", pod.Name, err)
-		return
 	}
 	log.Printf("created %s successfully", createdPod.Name)
+	createResultCh <- true
 
 	// Wait for the pod to be running
 	err = waitForPodRunning(clientset, createdPod.Name)
 	if err != nil {
 		log.Printf("Pod %s did not start running: %v", createdPod.Name, err)
-		return
 	}
 
 	// Execute the command inside the pod
@@ -108,20 +160,26 @@ func runWorkload(clientset *kubernetes.Clientset, config *rest.Config, pod *core
 
 	_, stderr, err := k8s.Exec(cmds)
 
+	execResult := ExecutionResult{
+		PodName: createdPod.Name,
+	}
 	if err != nil {
-		log.Fatal("Ecountered error while executing command in Pod ", createdPod.Name, " Error: ", err, string(stderr))
+		log.Print("Ecountered error while executing command in Pod ", createdPod.Name, " Error: ", err, string(stderr))
+		execResult.ErrorMessage = string(stderr)
 	} else {
 		log.Print("Successfully executed commands for ", createdPod.Name)
 	}
+	execResultCh <- execResult
 
 	//Wait for a short duration before deleting the pod
 	time.Sleep(1 * time.Second)
 	//delete the pod
 	err = clientset.CoreV1().Pods("default").Delete(context.TODO(), createdPod.Name, metav1.DeleteOptions{})
 	if err != nil {
-		log.Fatal(err)
+		log.Print("Encountered error while deleting pod. Error: ", err)
 	}
 	log.Printf("deleted %s successfully", createdPod.Name)
+	deleteResultCh <- true
 }
 
 // checks pod status to ensure it is running

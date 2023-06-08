@@ -1,17 +1,19 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: mydeployment
+  name: pod-executor-deployment
 spec:
+  replicas: 1
   selector:
     matchLabels:
-      app: benchmark
+      app: pod-executor
   template:
     metadata:
       labels:
-        app: benchmark
+        app: pod-executor
     spec: 
       containers:
-      - name: mycontainer
-        image: nginx:stable
-      serviceAccountName: pod-executor
+      - name: pod-executor
+        image: //TODO
+        ports:
+          -containerPort:8080
