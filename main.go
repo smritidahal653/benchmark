@@ -18,10 +18,8 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-type ExecutionResult struct {
-	PodName      string
-	ErrorMessage string
-}
+// Counters for tracking results
+var podsCreated, successfulExecutions, unsuccessfulExecutions, podsDeleted int
 
 func main() {
 	// provides the clientset and config
@@ -55,57 +53,27 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	//channels to keep track of pod creation, command execution, and deletion
-	createResultCh := make(chan bool)
-	execResultCh := make(chan ExecutionResult)
-	deleteResultCh := make(chan bool)
-
 	//run the workload
 	for i := 0; i < numPods; i++ {
 		podName := fmt.Sprintf("pod-%d", i)
 		pod := createPodObject(podName)
-		go runWorkload(clientset, config, pod, createResultCh, execResultCh, deleteResultCh, stopCh)
+		go runWorkload(clientset, config, pod, stopCh)
 
 	}
 
-	// Counters for tracking results
-	var podsCreated, commandsExecuted, successfulExecutions, unsuccessfulExecutions, podsDeleted int
-
 	for {
 		select {
-		case podCreationResult := <-createResultCh:
-			if podCreationResult {
-				podsCreated++
-			}
-		case executionResult := <-execResultCh:
-			commandsExecuted++
-			if executionResult.ErrorMessage != "" {
-				unsuccessfulExecutions++
-			} else {
-				successfulExecutions++
-			}
-		case podDeletionResult := <-deleteResultCh:
-			if podDeletionResult {
-				podsDeleted++
-			}
 		case <-ctx.Done():
 			close(stopCh)
-			fmt.Println("Finished creating, executing, and deleting pods.")
-			fmt.Println("----------------------------------------------------")
-			fmt.Printf("Pods created: %d\n", podsCreated)
-			fmt.Printf("Commands executed: %d\n", commandsExecuted)
-			fmt.Printf("Pods deleted: %d\n", podsDeleted)
-			fmt.Println("----------------------------------------------------")
-			fmt.Printf("Execution success rate: %d %%\n", ((successfulExecutions / commandsExecuted) * 100))
+
+			message := "Finished creating, executing, and deleting pods."
+			printStats(message)
+
 			return
 		case <-stopCh:
-			fmt.Println("Stopping pod creation, execution, and deletion...")
-			fmt.Println("----------------------------------------------------")
-			fmt.Printf("Pods created: %d\n", podsCreated)
-			fmt.Printf("Commands executed: %d\n", commandsExecuted)
-			fmt.Printf("Pods deleted: %d\n", podsDeleted)
-			fmt.Println("----------------------------------------------------")
-			fmt.Printf("Execution success rate: %d %%\n", ((successfulExecutions / commandsExecuted) * 100))
+			message := "Stopping pod creation, execution, and deletion..."
+			printStats(message)
+
 			return
 		}
 	}
@@ -131,14 +99,14 @@ func createPodObject(podName string) *corev1.Pod {
 }
 
 // creates a pod, execs into the pod then deletes the pod
-func runWorkload(clientset *kubernetes.Clientset, config *rest.Config, pod *corev1.Pod, createResultCh chan<- bool, execResultCh chan<- ExecutionResult, deleteResultCh chan<- bool, stopCh <-chan struct{}) {
+func runWorkload(clientset *kubernetes.Clientset, config *rest.Config, pod *corev1.Pod, stopCh <-chan struct{}) {
 	//create pod
 	createdPod, err := clientset.CoreV1().Pods("default").Create(context.TODO(), pod, metav1.CreateOptions{})
 	if err != nil {
 		log.Printf("Failed to create pod %s: %v", pod.Name, err)
 	}
 	log.Printf("created %s successfully", createdPod.Name)
-	createResultCh <- true
+	podsCreated++
 
 	// Wait for the pod to be running
 	err = waitForPodRunning(clientset, createdPod.Name)
@@ -159,16 +127,13 @@ func runWorkload(clientset *kubernetes.Clientset, config *rest.Config, pod *core
 
 	_, stderr, err := k8s.Exec(cmds)
 
-	execResult := ExecutionResult{
-		PodName: createdPod.Name,
-	}
 	if err != nil {
 		log.Print("Ecountered error while executing command in Pod ", createdPod.Name, " Error: ", err, string(stderr))
-		execResult.ErrorMessage = string(stderr)
+		unsuccessfulExecutions++
 	} else {
 		log.Print("Successfully executed commands for ", createdPod.Name)
+		successfulExecutions++
 	}
-	execResultCh <- execResult
 
 	//Wait for a short duration before deleting the pod
 	time.Sleep(1 * time.Second)
@@ -178,7 +143,7 @@ func runWorkload(clientset *kubernetes.Clientset, config *rest.Config, pod *core
 		log.Print("Encountered error while deleting pod. Error: ", err)
 	}
 	log.Printf("deleted %s successfully", createdPod.Name)
-	deleteResultCh <- true
+	podsDeleted++
 }
 
 // checks pod status to ensure it is running
@@ -195,4 +160,15 @@ func waitForPodRunning(clientset *kubernetes.Clientset, podName string) error {
 
 		time.Sleep(time.Second)
 	}
+}
+
+func printStats(message string) {
+	commandsExecuted := successfulExecutions + unsuccessfulExecutions
+	fmt.Println(message)
+	fmt.Println("----------------------------------------------------")
+	fmt.Printf("Pods created: %d\n", podsCreated)
+	fmt.Printf("Commands executed: %d\n", commandsExecuted)
+	fmt.Printf("Pods deleted: %d\n", podsDeleted)
+	fmt.Println("----------------------------------------------------")
+	fmt.Printf("Execution success rate: %d %%\n", ((successfulExecutions / commandsExecuted) * 100))
 }
