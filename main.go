@@ -30,8 +30,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	os.Setenv("NUM_PODS_TO_CREATE", "200")
-
 	numPods, err := strconv.Atoi(os.Getenv("NUM_PODS_TO_CREATE"))
 	if err != nil {
 		log.Print("Could not convert to int. Error: ", err)
@@ -54,7 +52,7 @@ func main() {
 	}()
 
 	//Timeout after 2 minutes
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
 	//channels to keep track of pod creation, command execution, and deletion
@@ -91,6 +89,7 @@ func main() {
 				podsDeleted++
 			}
 		case <-ctx.Done():
+			close(stopCh)
 			fmt.Println("Finished creating, executing, and deleting pods.")
 			fmt.Println("----------------------------------------------------")
 			fmt.Printf("Pods created: %d\n", podsCreated)
