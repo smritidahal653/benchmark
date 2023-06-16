@@ -21,6 +21,7 @@ import (
 
 // Counters for tracking results
 var podsCreated, successfulExecutions, unsuccessfulExecutions, podsDeleted int32
+var stopSignalReceived bool
 
 func main() {
 	// provides the clientset and config
@@ -63,12 +64,16 @@ func main() {
 	defer cancel()
 
 	//run the workload
-	go runWorkload(clientset, config, numPods, stopCh)
+	for i := 0; i < numPods; i++ {
+		podName := fmt.Sprintf("pod-%d", i)
+		pod := createPodObject(podName)
+		go runWorkload(clientset, config, pod, stopCh)
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			close(stopCh)
+			stopSignalReceived = true
 
 			message := "Finished creating, executing, and deleting pods."
 			printStats(message)
@@ -103,12 +108,8 @@ func createPodObject(podName string) *corev1.Pod {
 }
 
 // creates a pod, execs into the pod then deletes the pod
-func runWorkload(clientset *kubernetes.Clientset, config *rest.Config, numPods int, stopCh <-chan struct{}) {
-	for i := 0; i < numPods; i++ {
-
-		podName := fmt.Sprintf("pod-%d", i)
-		pod := createPodObject(podName)
-
+func runWorkload(clientset *kubernetes.Clientset, config *rest.Config, pod *corev1.Pod, stopCh <-chan struct{}) {
+	for !stopSignalReceived {
 		//create pod
 		createdPod, err := clientset.CoreV1().Pods("default").Create(context.TODO(), pod, metav1.CreateOptions{})
 		if err != nil {
