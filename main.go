@@ -27,8 +27,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	//os.Setenv("NUM_PODS_TO_CREATE", "20")
 
 	numPods, err := strconv.Atoi(os.Getenv("NUM_PODS_TO_CREATE"))
+	if err != nil {
+		log.Print("Could not convert to int. Error: ", err)
+	}
+
+	duration, err := strconv.Atoi(os.Getenv("DURATION_IN_MINUTES"))
 	if err != nil {
 		log.Print("Could not convert to int. Error: ", err)
 	}
@@ -49,8 +55,11 @@ func main() {
 		close(stopCh)
 	}()
 
-	//Timeout after 2 minutes
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	//Set a timer
+	timer := time.Duration(duration * int(time.Minute))
+	log.Print("Timer set. ", timer.String())
+
+	ctx, cancel := context.WithTimeout(context.Background(), timer)
 	defer cancel()
 
 	//run the workload
