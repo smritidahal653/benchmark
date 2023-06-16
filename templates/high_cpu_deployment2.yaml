@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: high-cpu-deployment2
+spec:
+  replicas: 10
+  selector:
+    matchLabels:
+      app: high-cpu
+  template:
+    metadata:
+      labels:
+        app: high-cpu
+    spec: 
+      serviceAccountName: pod-executor
+      containers:
+      - name: cpu-intensive-container
+        image: busybox
+        command: ["/bin/sh", "-c"]
+        args: ["while true; do :; done"]
+        resources:
+          limits:
+            cpu: "2"
+          requests:
+            cpu: "2"
