@@ -12,6 +12,7 @@ docker pull smritidahal/pod-executor
 - Apply all files under the templates/rbac folder 
 ```
 kubectl apply -f templates/rbac/
+```
 - Apply the two high cpu workload
 ```
 kubectl apply -f templates/high_cpu_deployment.yanl
