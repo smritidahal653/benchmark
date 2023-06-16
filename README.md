@@ -19,8 +19,7 @@ chmod +x run.sh
 cd scripts
 ./run.sh
 ```
-- Copy the pod name from the terminal after script has finished running
--Monitor the logs for the deployment
+- Copy the pod name from the terminal after script has finished running and monitor the logs for the pod
 ```
 kubectl logs -f <pod_name>
 ```
