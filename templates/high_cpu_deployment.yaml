@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: high-cpu-deployment
+spec:
+  replicas: 10
+  selector:
+    matchLabels:
+      app: high-cpu
+  template:
+    metadata:
+      labels:
+        app: high-cpu
+    spec: 
+      serviceAccountName: pod-executor
+      containers:
+      - name: cpu-stress
+        image: polinux/stress
+        command: ["stress"]
+        args: ["--cpu", "2", "--timeout", "3600s"]

@@ -20,4 +20,6 @@ spec:
           - containerPort: 8080
         env:
         - name: NUM_PODS_TO_CREATE
-          value: "500"
+          value: "100"
+        - name: DURATION_IN_MINUTES
+          value: "5"

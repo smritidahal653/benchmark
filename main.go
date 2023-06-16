@@ -178,6 +178,8 @@ func printStats(message string) {
 	fmt.Println("----------------------------------------------------")
 	fmt.Printf("Pods created: %d\n", podsCreated)
 	fmt.Printf("Commands executed: %d\n", commandsExecuted)
+	fmt.Printf("Successful commands: %d\n", successfulExecutions)
+	fmt.Printf("Unsuccessful commands: %d\n", unsuccessfulExecutions)
 	fmt.Printf("Pods deleted: %d\n", podsDeleted)
 	fmt.Println("----------------------------------------------------")
 	fmt.Printf("Execution success rate: %d %%\n", ((successfulExecutions / commandsExecuted) * 100))
