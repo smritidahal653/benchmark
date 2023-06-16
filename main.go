@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -19,7 +20,7 @@ import (
 )
 
 // Counters for tracking results
-var podsCreated, successfulExecutions, unsuccessfulExecutions, podsDeleted int
+var podsCreated, successfulExecutions, unsuccessfulExecutions, podsDeleted int32
 
 func main() {
 	// provides the clientset and config
@@ -27,7 +28,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	//os.Setenv("NUM_PODS_TO_CREATE", "20")
 
 	numPods, err := strconv.Atoi(os.Getenv("NUM_PODS_TO_CREATE"))
 	if err != nil {
@@ -63,11 +63,7 @@ func main() {
 	defer cancel()
 
 	//run the workload
-	for i := 0; i < numPods; i++ {
-		podName := fmt.Sprintf("pod-%d", i)
-		pod := createPodObject(podName)
-		go runWorkload(clientset, config, pod, stopCh)
-	}
+	go runWorkload(clientset, config, numPods, stopCh)
 
 	for {
 		select {
@@ -107,20 +103,26 @@ func createPodObject(podName string) *corev1.Pod {
 }
 
 // creates a pod, execs into the pod then deletes the pod
-func runWorkload(clientset *kubernetes.Clientset, config *rest.Config, pod *corev1.Pod, stopCh <-chan struct{}) {
-	for {
+func runWorkload(clientset *kubernetes.Clientset, config *rest.Config, numPods int, stopCh <-chan struct{}) {
+	for i := 0; i < numPods; i++ {
+
+		podName := fmt.Sprintf("pod-%d", i)
+		pod := createPodObject(podName)
+
 		//create pod
 		createdPod, err := clientset.CoreV1().Pods("default").Create(context.TODO(), pod, metav1.CreateOptions{})
 		if err != nil {
 			log.Printf("Failed to create pod %s: %v", pod.Name, err)
+			continue
 		}
 		log.Printf("created %s successfully", createdPod.Name)
-		podsCreated++
+		atomic.AddInt32(&podsCreated, 1)
 
 		// Wait for the pod to be running
 		err = waitForPodRunning(clientset, createdPod.Name)
 		if err != nil {
 			log.Printf("Pod %s did not start running: %v", createdPod.Name, err)
+			continue
 		}
 
 		// Execute the command inside the pod
@@ -138,10 +140,10 @@ func runWorkload(clientset *kubernetes.Clientset, config *rest.Config, pod *core
 
 		if err != nil {
 			log.Print("Ecountered error while executing command in Pod ", createdPod.Name, " Error: ", err, string(stderr))
-			unsuccessfulExecutions++
+			atomic.AddInt32(&unsuccessfulExecutions, 1)
 		} else {
 			log.Print("Successfully executed commands for ", createdPod.Name)
-			successfulExecutions++
+			atomic.AddInt32(&successfulExecutions, 1)
 		}
 
 		//Wait for a short duration before deleting the pod
@@ -150,9 +152,10 @@ func runWorkload(clientset *kubernetes.Clientset, config *rest.Config, pod *core
 		err = clientset.CoreV1().Pods("default").Delete(context.TODO(), createdPod.Name, metav1.DeleteOptions{})
 		if err != nil {
 			log.Print("Encountered error while deleting pod. Error: ", err)
+			continue
 		}
 		log.Printf("deleted %s successfully", createdPod.Name)
-		podsDeleted++
+		atomic.AddInt32(&podsDeleted, 1)
 	}
 }
 
@@ -173,14 +176,14 @@ func waitForPodRunning(clientset *kubernetes.Clientset, podName string) error {
 }
 
 func printStats(message string) {
-	commandsExecuted := successfulExecutions + unsuccessfulExecutions
+	commandsExecuted := atomic.LoadInt32(&successfulExecutions) + atomic.LoadInt32(&unsuccessfulExecutions)
 	fmt.Println(message)
 	fmt.Println("----------------------------------------------------")
-	fmt.Printf("Pods created: %d\n", podsCreated)
+	fmt.Printf("Pods created: %d\n", atomic.LoadInt32(&podsCreated))
 	fmt.Printf("Commands executed: %d\n", commandsExecuted)
-	fmt.Printf("Successful commands: %d\n", successfulExecutions)
-	fmt.Printf("Unsuccessful commands: %d\n", unsuccessfulExecutions)
-	fmt.Printf("Pods deleted: %d\n", podsDeleted)
+	fmt.Printf("Successful commands: %d\n", atomic.LoadInt32(&successfulExecutions))
+	fmt.Printf("Unsuccessful commands: %d\n", atomic.LoadInt32(&unsuccessfulExecutions))
+	fmt.Printf("Pods deleted: %d\n", atomic.LoadInt32(&podsDeleted))
 	fmt.Println("----------------------------------------------------")
-	fmt.Printf("Execution success rate: %d %%\n", ((successfulExecutions / commandsExecuted) * 100))
+	fmt.Printf("Execution success rate: %d %%\n", ((atomic.LoadInt32(&successfulExecutions) / commandsExecuted) * 100))
 }
