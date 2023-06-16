@@ -9,24 +9,17 @@ This is a concurrent Go program that demonstrates the creation, execution, and d
 ```
 docker pull smritidahal/pod-executor
 ```
-- Apply all files under the templates/rbac folder 
+- Go into the scripts folder and provide executable permissions to the two scripts in there 
 ```
-kubectl apply -f templates/rbac/
+chmod +x cleanup.sh
+chmod +x run.sh
 ```
-- Apply the two high cpu workload
+- Run the run.sh script
 ```
-kubectl apply -f templates/high_cpu_deployment.yanl
-kubectl apply -f templates/high_cpu_deployment2.yaml
+cd scripts
+./run.sh
 ```
-- Verify cpu usage 
-```
-kubectl top node
-```
-- Update the environment variables in deployment.yaml file according to your needs
-- Apply the deployment file 
-```
-kubectl apply -f templates/deployment.yaml
-```
+- Copy the pod name from the terminal after script has finished running
 -Monitor the logs for the deployment
 ```
 kubectl logs -f <pod_name>
